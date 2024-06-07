@@ -1,0 +1,638 @@
+###   the model is as follows:
+###   x | mu, phi ~ N_p(mu, phi^{-1})
+###   y | x, beta, tau ~ N(x*beta, tau^{-1} I)
+###   with priors 
+###   mu ~ N(theta, Sigma)
+###   Phi ~ Wishart_p(d,W)
+###   beta | tau ~ N_{p+1}(m,tau^{-1}V^{-1})
+###   tau ~ Gamma(a/2, b/2), using the shape, rate parameterization
+###   In total, the parameters are (beta, tau, mu, Phi)
+###   the hyperparameters are (m, V, a, b, theta, Sigma, d, W)
+###   and sufficient statistics are (XtX, XtY, YtY, X_bar, and S=sum((X-X_bar)%*%top(X-X_bar)) )
+
+# library(VGAM)###for laplace distribution
+# library(MASS)### for multivariate normal simulation
+
+
+
+
+
+## clamping + location-scale transformation
+## use this function to normalize each covariate x[-,j] and y
+normalize <- function(vec, left, right){
+  return(2 * (pmin(right, pmax(left, vec)) - left) / (right - left) - 1 );
+}
+
+## prior on N
+g_log <- function(N){
+  return(0)## constant improper prior.
+  #return(dpois(N,lambda=100,log=TRUE))
+}
+
+#log-probability of transitioning from N to N_.
+q_log <-function(N_,N){
+  if(N==1 & N_==2){
+    return(0)# log(1)
+  }
+  if(N>1 & abs(N-N_)==1){
+    return(log(1/2))
+  }
+  else{
+    # print("q is zero")
+    return(-Inf)
+  }
+}
+
+## initialize the Gibbs sampler----
+rinit_data <- function(N,params){
+  
+  ### generate X from model
+  x = mvrnorm(n=N,mu=params$mu,Sigma = params$phi_inv)
+  X = cbind(1, x);
+  
+  ### generate Y given Xbeta + noise
+  Y <- as.numeric(X %*% params$beta + rnorm(N, 0, s=sqrt(1/params$tau)));
+  ### clamp and get diffT1, diffT2, diffT3
+  return(data = list(N=N, X = X, Y = Y));
+  #keep track of current N as well as current upper bound on N (N_upper)
+}
+
+## initialize the Gibbs sampler----
+rinit_gibbs <- function(N_guess,hyperparams = hyperparams,params = NULL){
+  #N is an initial guess at N. Could be N_DP.
+  
+  N_upper = 2*N_guess # a crude upper bound for the amount of space we will need.
+  ## generate parameters from prior
+  if(is.null(params)){
+    params = list()
+    params$tau = hyperparams$a/hyperparams$b#rgamma(n=1,shape = hyperparams$a/2,rate = hyperparams$b/2)
+    params$beta <- hyperparams$m#mvrnorm(n=1,mu=hyperparams$m,Sigma = hyperparams$V_inv/params$tau)
+    params$mu <- hyperparams$theta#mvrnorm(n=1,mu=hyperparams$theta,Sigma = ginv(hyperparams$Sigma))
+    params$phi <- ginv(hyperparams$W_inv)#rWishart(n=1, df=hyperparams$d, Sigma=ginv(hyperparams$W_inv))[,,1]
+    params$phi_inv <- ginv(params$phi)
+  }
+  #beta_mat <- matrix(rnorm((p+1)*N_upper,0,tau_star),nrow=(p+1),ncol=N_upper)
+  ### generate X from model
+  state = rinit_data(N=N_upper,params)
+  state$N = N_guess
+  state$N_upper = N_upper
+  state$params = params
+  state$accMean_change = 0
+  state$accMean_jump=0
+  return(state);
+  #keep track of current N as well as current upper bound on N (N_upper)
+}
+
+## compute distance from summary statistics to sdp--------
+## only used the first time.
+get_diffT <- function(state, clbounds, sdp){
+  ### clamp X and Y
+  X_cl <- apply(state$X[1:state$N,], 2, function(x) normalize(x, clbounds[1], clbounds[3]));
+  X_cl[, 1] <- 1;
+  Y_cl <- sapply(state$Y[1:state$N], function(y) normalize(y, clbounds[2], clbounds[4]));
+  ### compute summary statistics and distance to noisy sdp
+  if(is.null(sdp)){
+    state$T1 <- t(X_cl) %*% Y_cl
+    state$T2 <- t(Y_cl) %*% Y_cl
+    state$T3 <- t(X_cl) %*% X_cl
+  }
+  else{
+    state$T1 <- t(X_cl) %*% Y_cl - sdp[[1]];
+    state$T2 <- t(Y_cl) %*% Y_cl - sdp[[2]];
+    state$T3 <- t(X_cl) %*% X_cl - sdp[[3]];
+  }
+  return(state);
+}
+
+
+### these are not used in the DP density, just for the non-private posterior.
+###  just run this after the database is updated.
+get_suffStats = function(state){
+  state$XtX <- t(state$X[1:state$N,])%*%state$X[1:state$N,]
+  state$XtY <- t(state$X[1:state$N,])%*%state$Y[1:state$N]
+  state$YtY <- t(state$Y[1:state$N])%*%state$Y[1:state$N]
+  state$Xbar <- state$XtX[1,2:(p+1)]/state$N
+  state$S <- (state$N-1)*cov(state$X[1:state$N,2:(p+1)])
+  return(state)
+}
+
+## compute density of privacy noise---------
+## using Laplace densities
+## operations on log-scale for stability
+get_logeta <- function(state, N_DP,privacy_params){
+  noise_scale = privacy_params$deltaa/ privacy_params$eps
+  logeta <- sum(VGAM::dlaplace(state$T1 , 0, noise_scale, TRUE)) + 
+    VGAM::dlaplace(state$T2, 0, noise_scale, TRUE) + 
+    sum(VGAM::dlaplace(state$T3[lower.tri(state$T3)], 0, noise_scale, TRUE)) + 
+    sum(VGAM::dlaplace(diag(state$T3)[2:length(state$T2)], 0, noise_scale, TRUE));
+  ## current logeta contains the S part
+  if(is.nan(privacy_params$ep_N) | is.infinite(privacy_params$ep_N)) return(logeta);
+  return(logeta +VGAM::dlaplace(state$N-N_DP,0,1/privacy_params$ep_N,TRUE));
+}
+
+
+## calculate individual contribution to t(x,y)
+get_diffT_individual <- function(x, y, clbounds){
+  xcl <- normalize(x, clbounds[1], clbounds[3]);
+  xcl[1] <- 1;
+  ycl <- normalize(y, clbounds[2], clbounds[4]);
+  diffti = list(diffti1 = xcl %o% ycl, 
+                diffti2 = t(ycl)%*%ycl, 
+                diffti3 = xcl %o% xcl)
+  return(diffti);
+}
+
+
+## difference in each individual contribution to t(x,y)
+## between current state and proposed state
+## ti(xi_star,yi_star) - to(xi, yi)
+get_diffeacht <- function(x, x_, y, y_, clbounds){
+  xcl <- normalize(x, clbounds[1], clbounds[3]);
+  xcl[1] <- 1;
+  ycl <- normalize(y, clbounds[2], clbounds[4]);
+  xcl_ <- normalize(x_, clbounds[1], clbounds[3]);
+  xcl_[1] <- 1;
+  ycl_ <- normalize(y_, clbounds[2], clbounds[4]);
+  diffti = list(diffti1 = xcl_ %o% ycl_ - xcl %o% ycl, 
+                diffti2 = t(ycl_)%*%ycl_ - t(ycl)%*%ycl, 
+                diffti3 = xcl_ %o% xcl_ - xcl %o% xcl)
+  return(diffti);
+}
+
+## gibbs updates-----
+## independent-MH kernel for xi, yi given xnoti, ynoti, beta, sdp, and other parameters
+## propose (xi_star,yi_star) pair from the model f(x,y | theta);
+## acceptance ratio is eta(tstar) / eta(t);
+update_XiYi_gibbs_change <- function(i,state,hyperparams=hyperparams,privacy_params,N_DP){
+  acc <- 0;
+  ## propose xi and yi from model
+  #print(state$params)
+  xi <- c(1,as.numeric(mvrnorm(n=1,mu=state$params$mu,Sigma=state$params$phi_inv)))
+  #print(xi)
+  yi <- xi %*% state$params$beta + sqrt(1/state$params$tau) * rnorm(1);
+  ## compute T*
+  diffti <- get_diffeacht(state$X[i,],xi, state$Y[i], yi, privacy_params$clbounds);
+  
+  state_proposed = state
+  state_proposed$X[i,] <- xi;
+  state_proposed$Y[i] <- yi;
+  state_proposed$T1=state$T1 + diffti$diffti1; ## xty
+  state_proposed$T2=state$T2 + diffti$diffti2; ##yty
+  state_proposed$T3=state$T3 + diffti$diffti3; ## xtx
+  state_proposed$logeta = get_logeta(state_proposed,N_DP,privacy_params)
+  #print(state_proposed$logeta)
+  
+  ## accept and reject step 
+  logu <- log(runif(1));
+  if(logu < state_proposed$logeta - state$logeta){
+    acc <- 1;
+    ## accept and change all associated values of x and y 
+    state = state_proposed
+  }
+  state$acc <- acc;
+  return(state)
+}
+
+## independent-MH kernel for xi, yi given xnoti, ynoti, beta, sdp, and other parameters
+## propose (xi_star,yi_star) pair from the model f(x,y | theta);
+## acceptance ratio is eta(tstar) / eta(t);
+update_XiYi_gibbs_add <- function(state,hyperparams=hyperparams,privacy_params,N_DP){
+  acc <- 0;
+  ## propose xi and yi from model
+  xi <- c(1,as.numeric(mvrnorm(n=1,mu=state$params$mu,Sigma=state$params$phi_inv)))
+  yi <- xi %*% state$params$beta + sqrt(1/state$params$tau) * rnorm(1);
+  ## compute T*
+  diffti <- get_diffT_individual(xi, yi, privacy_params$clbounds);
+  if(state$N+1>state$N_upper){
+    # print("augmented data structure doubled")
+    state$X <-rbind(state$X,state$X)
+    state$Y <-c(state$Y,state$Y)
+    state$N_upper=2*state$N_upper
+  }
+  state_proposed = state
+  state_proposed$X[state$N+1,] <- xi;
+  state_proposed$Y[state$N+1] <- yi;
+  state_proposed$T1=state$T1 + diffti$diffti1; ## xty
+  state_proposed$T2=state$T2 + diffti$diffti2; ##yty
+  state_proposed$T3=state$T3 + diffti$diffti3; ## xtx
+  state_proposed$N = state$N+1
+  state_proposed$logeta = get_logeta(state_proposed,N_DP,privacy_params)
+  
+  ## accept and reject step 
+  logu <- log(runif(1));
+  log_accept = state_proposed$logeta - state$logeta+
+    q_log(state$N,state$N+1)-q_log(state$N+1,state$N)+
+    g_log(state$N+1)-g_log(state$N)
+  
+  if(logu < log_accept){
+    acc <- 1;
+    ## accept and change all associated values of x and y 
+    state = state_proposed
+  }
+  state$acc <- acc;
+  return(state)
+}
+
+update_XiYi_gibbs_delete <- function(i,state,privacy_params,N_DP){
+  acc <- 0;
+  
+  ## compute T*
+  diffti <- get_diffT_individual(state$X[i,], state$Y[i], privacy_params$clbounds);
+  state_proposed = state
+  state_proposed$X[i,] <- state$X[state$N,];
+  state_proposed$Y[i] <- state$Y[state$N] ;
+  state_proposed$T1=state$T1 - diffti$diffti1; ## xty
+  state_proposed$T2=state$T2 - diffti$diffti2; ##yty
+  state_proposed$T3=state$T3 - diffti$diffti3; ## xtx
+  state_proposed$N = state$N-1
+  state_proposed$logeta = get_logeta(state_proposed,N_DP,privacy_params)
+  
+  ## accept and reject step 
+  logu <- log(runif(1));
+  log_accept = state_proposed$logeta - state$logeta+
+    q_log(state$N,state$N-1)-q_log(state$N-1,state$N)+
+    g_log(state$N-1)-g_log(state$N);
+  if(logu < log_accept){
+    acc <- 1;
+    ## accept and change all associated values of x and y 
+    state = state_proposed
+  }
+  state$acc <- acc;
+  return(state)
+}
+
+
+
+## update params given (x,y) using conjugate posterior
+update_params_gibbs <- function(state,hyperparams=hyperparams){
+  ### get sufficient statistics
+  state = get_suffStats(state)
+  m_star = ginv(state$XtX+hyperparams$V_inv)%*% (state$XtY + hyperparams$V_inv%*% hyperparams$m)
+  V_inv_star = state$XtX + hyperparams$V_inv
+  V_star = ginv(V_inv_star)
+  a_star = hyperparams$a + state$N
+  b_star = hyperparams$b + state$YtY + t(hyperparams$m)%*%hyperparams$V_inv%*% hyperparams$m-t(m_star)%*% V_inv_star%*% m_star
+  
+  
+  tau_new = rgamma(n=1,shape = a_star/2,rate = b_star/2)
+  beta_new = mvrnorm(n=1,mu=m_star,Sigma = V_star/tau_new)
+  
+  Sigma_star = ginv(hyperparams$Sigma_inv + state$N*state$params$phi)
+  theta_star = Sigma_star %*%(hyperparams$Sigma_inv %*% hyperparams$theta + state$N*state$params$phi%*%state$Xbar)
+  
+  mu_new = mvrnorm(n=1,mu=theta_star,Sigma = Sigma_star)
+  
+  d_star = hyperparams$d + state$N
+  W_star = ginv(hyperparams$W_inv + state$S + state$N*(mu_new - state$Xbar)%*%t(mu_new - state$Xbar))### threw in inverse?
+  
+  phi_new = rWishart(n=1,df=d_star,Sigma = W_star)[,,1]
+  
+  
+  params_new = list(tau=tau_new,beta=beta_new,mu=mu_new,phi=phi_new,phi_inv = ginv(phi_new))
+  state$params = params_new
+  return(state);
+}
+
+
+## One iteration of the Gibbs sampler for linear regression
+# swaps decides how many individuals should be swapped
+# fullUpdate does a complete update of the database. ignores swaps in this case.
+# jumps decides how many individuals should be added/deleted in one "iteration". 
+# intuitively, we want loops large enough that we are likely to have made at least one change to the database.
+onestep_gibbs <- function(state,hyperparams,privacy_params,N_DP,swaps = 1,jumps=1, fullUpdate = TRUE){
+  if(is.na(privacy_params$ep_N) | is.infinite(privacy_params$ep_N)) jumps <- 0;
+  ### step1
+  acc_change <- 0;
+  acc_jump <- 0;
+  ###  update the database by swapping rows
+  if(fullUpdate == TRUE){
+    ###  full sweep, like in the original paper
+    for(i in 1:state$N){
+      state <- update_XiYi_gibbs_change(i,state,hyperparams,privacy_params,N_DP);
+      acc_change <- state$acc + acc_change;
+    }
+    state$accMean_change <- acc_change/state$N;
+  }
+  else if(swaps>0){
+    ### randomly update "swaps" many rows
+    for(i in 1:swaps){
+      i = sample(size = 1,1:state$N)
+      state <- update_XiYi_gibbs_change(i,state,hyperparams,privacy_params,N_DP);
+      acc_change <- state$acc + acc_change;
+    }
+    state$accMean_change <- acc_change/swaps;
+  }
+  
+  ### reversible jump steps. Do "jumps" many times
+  if(jumps>0){
+    for(index in 1:jumps){
+      if(state$N<2){
+        # print("N is too small!!!")
+      }
+      if(state$N==2){
+        state <- update_XiYi_gibbs_add(state,hyperparams,privacy_params,N_DP);
+      }
+      else{
+        coin <- rbinom(n=1,size=1,prob=1/2)
+        if(coin==1){
+          state <- update_XiYi_gibbs_add(state,hyperparams,privacy_params,N_DP);
+          #print(state$N)
+        }
+        else if(coin==0){
+          i = sample(size=1,1:state$N);
+          state <- update_XiYi_gibbs_delete(i,state,privacy_params,N_DP);
+          #print(state$N)
+        }
+        else{
+          # print("coin is broken")
+        }
+        
+      }
+      acc_jump <- state$acc + acc_jump;
+      
+    }
+  }
+  state$accMean_jump <- acc_jump / jumps;
+  state = get_suffStats(state)
+  #print(state$XtY)
+  ### better to update the parameters after updating the database.
+  state <- update_params_gibbs(state,hyperparams);### step2 of gibbs sampler
+  #state$accMean <- (acc_change + acc_jump)
+  #print(acc/loops)
+  #print(state$params)
+  return(state);
+}
+
+
+
+
+run_chain = function(iteration=1,num_cycles=15000,N=1000,ep_N=NaN,eps,N_guess,
+                     hyperparams=hyperparams,privacy_params = privacy_params,
+                     swaps=1,jumps=1,fullUpdate=TRUE){
+  
+  
+  ### true data parameters
+  params_true = list(beta = c(0,-1,1),
+                     tau = 1,
+                     mu = c(1,-1),
+                     phi = diag(p),
+                     phi_inv = diag(p))
+  
+  
+  set.seed(0)### fix the seed for the true (sensitive) data. 
+  data = rinit_data(N,params_true)
+  set.seed(iteration)### use the iteration as the seed for the privatized statistics
+  
+  if(privacy_params$ep_N == 0){
+    N_DP <- N;
+    jumps <- 0;
+  }else{
+    N_DP =  N + rlaplace(n=1,location=0,scale=1/privacy_params$ep_N)
+  }
+
+  
+  data = get_diffT(data,privacy_params$clbounds,sdp=NULL)
+  ## sample the noises
+  noise_scale = privacy_params$deltaa/privacy_params$eps
+  l1 <- matrix(VGAM::rlaplace(p + 1, 0, noise_scale), ncol = 1);
+  l2 <- VGAM::rlaplace(1,0,noise_scale);
+  l3 <- matrix(VGAM::rlaplace( ( p + 1) * (p + 1), 0,  noise_scale), ncol = (p + 1));
+  l3[lower.tri(l3)] <- t(l3)[lower.tri(l3)];
+  l3[1,1] <- 0;
+  sdp = list(data$T1+l1,data$T2+l2,data$T3+l3) ### observed DP output, along with N_DP.
+  
+  #get_logeta(data,sdp)
+  
+  # need to guess what N should be. Since N_DP is unbiased, we can use it. 
+  if(is.na(N_guess)) N_guess = max(2,ceiling(N_DP))
+  ## initiate the chain 
+  state <-rinit_gibbs(N_guess,hyperparams)
+  state <- get_diffT(state, privacy_params$clbounds, sdp);
+  state$logeta <- get_logeta(state,N_DP,privacy_params);
+  
+  ## store parameter values, acceptance rate, and log-posterior
+  logeta_chain <- double(num_cycles);
+  beta_chain <- matrix(NA, nrow = p + 1, ncol = num_cycles);
+  tau_chain <- double(num_cycles);
+  mu_chain <- matrix(NA, nrow = p, ncol = num_cycles);
+  phi_chain <- matrix(NA, nrow = p^2, ncol = num_cycles);
+  n_chain <- rep(NA,num_cycles);
+  acc_chain_change <- double(num_cycles);
+  acc_chain_jump <- double(num_cycles);
+  #acc_chain_mean <- double(num_cycles);
+  
+  
+  for(iter in 1 : num_cycles){
+    state <- onestep_gibbs(state,hyperparams,privacy_params,N_DP,jumps=1, fullUpdate = TRUE)
+    logeta_chain[iter] <- state$logeta;
+    
+    beta_chain[,iter] <- state$params$beta;
+    tau_chain[iter] <- state$params$tau;
+    mu_chain[,iter] <- state$params$mu;
+    phi_chain[,iter] <- as.numeric(state$params$phi)
+    n_chain[iter] <- state$N;
+    acc_chain_jump[iter] <- state$accMean_jump;
+    acc_chain_change[iter] <- state$accMean_change;
+    if(iter %% 100 == 0) cat("iteration", iter, "(",100*iter/num_cycles,"% )\n");
+  }
+  
+  outputs = list(logeta_chain=logeta_chain,
+                 tau_chain = tau_chain,
+                 beta_chain=beta_chain,
+                 mu_chain = mu_chain,
+                 phi_chain = phi_chain,
+                 n_chain=n_chain,
+                 acc_chain_jump=acc_chain_jump,
+                 acc_chain_change=acc_chain_change,
+                 sdp=sdp,
+                 N_DP=N_DP)
+  return(outputs)
+}
+
+
+## MCEM steps-----
+## One iteration of the MCEM sampler for linear regression
+# swaps decides how many individuals should be swapped
+# fullUpdate does a complete update of the database. ignores swaps in this case.
+# jumps decides how many individuals should be added/deleted in one "iteration". 
+# intuitively, we want loops large enough that we are likely to have made at least one change to the database.
+onestep_mcem <- function(state, stepsize, privacy_params, hyperparams, N_DP, jumps =1, fullUpdate = TRUE){
+  nrjmcmc <- 100;
+  acc_change <- 0;
+  acc_jump <- 0;
+  old_N <- state$N;
+
+  cu_xtx <- matrix(0, nrow = p + 1, ncol = p + 1);
+  cu_xty <- matrix(0, nrow = p + 1, ncol = 1);
+  cu_n <- 0;
+  cu_residual <- 0;
+  
+  
+
+  for(irjmcmc in 1 : nrjmcmc){
+    ###  update the database by swapping rows
+    if(fullUpdate == TRUE){
+      ###  full sweep, like in the original paper
+      for(i in 1:state$N){
+        state <- update_XiYi_gibbs_change(i,state,hyperparams,privacy_params,N_DP);
+        acc_change <- state$acc + acc_change;
+      }
+      state$accMean_change <- acc_change/state$N;
+    }
+    else if(swaps>0){
+      ### randomly update "swaps" many rows
+      for(i in 1:swaps){
+        # print("strange")
+        i = sample(size = 1,1:state$N)
+        state <- update_XiYi_gibbs_change(i,state,hyperparams,privacy_params,N_DP);
+        acc_change <- state$acc + acc_change;
+      }
+      state$accMean_change <- acc_change/swaps;
+    }
+    
+    ### reversible jump steps. Do "jumps" many times
+    for(index in 1:jumps){
+      if(state$N==(1+p)){
+        state <- update_XiYi_gibbs_add(state,hyperparams,privacy_params,N_DP);
+      }
+      else{
+        coin <- (runif(1) < 0.5)
+        if(coin==1){
+          state <- update_XiYi_gibbs_add(state,hyperparams,privacy_params,N_DP);
+        }
+        else if(coin==0){
+          i = sample(size=1,1:state$N);
+          state <- update_XiYi_gibbs_delete(i,state,privacy_params,N_DP);
+        }
+        else{
+          # print("coin is broken")
+        }
+        
+      }
+      acc_jump <- state$acc + acc_jump;
+    }
+    state <- get_suffStats(state);
+    state$accMean_jump <- acc_jump / jumps;
+    cu_xtx <- cu_xtx + state$XtX;
+    cu_xty <- cu_xty + state$XtY;
+    cu_n <- cu_n + state$N;
+    cu_residual <- cu_residual + sum( (state$Y[1:state$N] - state$X[1:state$N,] %*% state$params$beta)**2)
+  }
+  ## updates
+  state$params$tau <- cu_n / cu_residual;
+  state$params$beta <- ginv(cu_xtx) %*% cu_xty;
+  state$params$mu <- cu_xtx[1,2:(p+1)] / cu_n;
+  state$params$phi <- params_true$phi;
+  state$params$phi_inv <- params_true$phi_inv;
+  # state$params$phi_inv <- cu_xtx[2 : (p+1), 2 : (p+1)] / (cu_n - 1) - (cu_xtx[2:(p+1),1] / cu_n) %*% t(cu_xtx[1,2:(p+1)] / cu_n)
+  # state$params$phi <- ginv(state$params$phi_inv);
+  return(state);
+}
+
+
+
+
+
+run_mcem <- function(iteration=1,num_cycles=15000,N=1000,ep_N=NaN,eps,N_guess,
+                     hyperparams=hyperparams,privacy_params = privacy_params,
+                     swaps=1,jumps=1,fullUpdate=TRUE){
+  
+  ### true data parameters
+  params_true = list(beta = c(0,-1,1),
+                     tau = 1,
+                     mu = c(1,-1),
+                     phi = diag(p),
+                     phi_inv = diag(p))
+  
+  
+  set.seed(0)### fix the seed for the true (sensitive) data. 
+  data = rinit_data(N,params_true)
+
+  ### use the iteration as the seed for the privatized statistics
+  set.seed(iteration)
+  
+  ## noisy N
+  if(is.na(privacy_params$ep_N) | is.infinite(privacy_params$ep_N)){
+    N_DP <- N;
+  }else{
+    N_DP <-  N + rlaplace(n=1,location=0,scale=1/privacy_params$ep_N);
+  }
+  data <- get_diffT(data,privacy_params$clbounds,sdp=NULL)
+  ## noisy sdp
+  noise_scale <- privacy_params$deltaa/privacy_params$eps
+  l1 <- matrix(VGAM::rlaplace(p + 1, 0, noise_scale), ncol = 1);
+  l2 <- VGAM::rlaplace(1,0,noise_scale);
+  l3 <- matrix(VGAM::rlaplace( ( p + 1) * (p + 1), 0,  noise_scale), ncol = (p + 1));
+  l3[lower.tri(l3)] <- t(l3)[lower.tri(l3)];
+  l3[1,1] <- 0;
+  sdp <- list(data$T1+l1,data$T2+l2,data$T3+l3) ### observed DP output, along with N_DP.
+  
+  # need to guess what N should be. Since N_DP is unbiased, we can use it. 
+  if(is.na(N_guess)) N_guess <- max(2,ceiling(N_DP));
+  ## initiate the chain 
+  state <-rinit_gibbs(N_guess,hyperparams)
+  state <- get_diffT(state, privacy_params$clbounds, sdp);
+  state$logeta <- get_logeta(state,N_DP,privacy_params);
+  # cat("initial logeta is", state$logeta, "\n");
+  
+  ## convert "cycles" to "rounds", by default each round is 100 cycles
+  num_rounds <- floor(num_cycles / 100);
+  burn_in_rounds <- floor(num_rounds /3);
+  mcem_rounds <- num_rounds - burn_in_rounds;
+  ## store parameter values, acceptance rate, and log-posterior
+  logeta_chain <- double(num_rounds);
+  beta_chain <- matrix(NA, nrow = p + 1, ncol = num_rounds);
+  n_chain <- rep(NA,num_rounds);
+  tau_chain <- double(num_rounds);
+  mu_chain <- matrix(NA, nrow = p, ncol = num_rounds);
+  acc_chain_change <- double(num_rounds);
+  acc_chain_jump <- double(num_rounds);
+  #acc_chain_mean <- double(num_rounds);
+
+  ### run gibbs, corresponding to 30% of the rounds
+  for(iter in 1 : burn_in_rounds){
+    for(iterr in 1 : 100){
+      state <- onestep_gibbs(state,hyperparams,privacy_params,N_DP,jumps=1, fullUpdate = TRUE)
+    }
+    logeta_chain[iter] <- state$logeta;
+    beta_chain[,iter] <- state$params$beta;
+    tau_chain[iter] <- state$params$tau;
+    mu_chain[,iter] <- state$params$mu;
+    # phi_chain[,iter] <- as.numeric(state$params$phi)
+    n_chain[iter] <- state$N;
+    # acc_chain_jump[iter] <- state$accMean_jump;
+    # acc_chain_change[iter] <- state$accMean_change;
+    # if(iter %% 10 == 0) cat("iteration", iter, "(",100*iter/num_rounds,"% )\n");
+  }
+  # cat("burn-in finished.\n")
+
+
+  ### run MCEM 
+  for(iter in 1 : mcem_rounds){
+    # stepsize <- 0.08 * (1/ (1 + 0.9 * iter)); ## learning rate
+    # stepsize <- 0.01;
+    state <- onestep_mcem(state, stepsize, privacy_params, hyperparams, N_DP, jumps =1, fullUpdate = TRUE);
+    logeta_chain[iter + burn_in_rounds] <- state$logeta;
+    beta_chain[,iter + burn_in_rounds] <- state$params$beta;
+    tau_chain[iter + burn_in_rounds] <- state$params$tau;
+    n_chain[iter + burn_in_rounds] <- state$N;
+    mu_chain[, iter + burn_in_rounds] <- state$params$mu;
+    acc_chain_jump[iter + burn_in_rounds] <- state$accMean_jump;
+    acc_chain_change[iter + burn_in_rounds] <- state$accMean_change;
+    # if((iter + burn_in_rounds) %% 10 == 0) cat("iteration", iter + burn_in_rounds, "(",100*(iter + burn_in_rounds)/(burn_in_rounds + mcem_rounds),"% )\n");
+  }
+  
+  
+  outputs = list(logeta_chain=logeta_chain,
+                 beta_chain=beta_chain,
+                 n_chain=n_chain,
+                 tau_chain = tau_chain,
+                 mu_chain = mu_chain,
+                 acc_chain_jump=acc_chain_jump,
+                 acc_chain_change=acc_chain_change,
+                 sdp=sdp,
+                 N_DP=N_DP,
+                 state = state)
+  return(outputs)
+}
+
