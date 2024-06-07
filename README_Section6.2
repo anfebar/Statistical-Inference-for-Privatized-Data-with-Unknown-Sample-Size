@@ -1,0 +1,54 @@
+# Reproducing Results in Section 6.2
+
+This README file provides instructions to use the files and run the code in the folder named `Section6.2`. These instructions will help users reproduce the results associated with the analysis of the ATUS dataset reported in Section 6.2. The software used to generate the results is the R programming language.
+
+## Steps to Reproduce the Results
+
+1. **Set Working Directory**
+   - Set the working directory to the folder named `Section6.2`.
+
+2. **Install Required Libraries**
+   - Ensure that the following libraries are installed in R:
+     ```r
+     install.packages("coda")
+     install.packages("LaplacesDemon")
+     install.packages("Rcpp")
+     install.packages("parallel")
+     ```
+
+3. **Run the Simulation Code**
+   - Run the code available in the R script `ATUS_code.R`. This code will run all scenarios and place the output files in the folder named `output`.
+     ```r
+     source("ATUS_code.R")
+     ```
+
+4. **Analyze the Results**
+   - Run the code available in the R script `Selected_plots.R` to analyze the results generated in step 3 and reproduce the results reported in Section 6.2.
+     ```r
+     source("Selected_plots.R")
+     ```
+     This script will create a PDF file containing all the figures associated with Section 6.2.
+
+## Notes
+
+- To generate the output files in step 3, we used parallel computing using the `mclapply` function from the `parallel` library. If the user does not want to use this function, it can be replaced by the `lapply` function. 
+
+- The code was run using a desktop running Ubuntu 22.04.4 LTS with the following specifications:
+  - RAM: 62GB
+  - CPU(s): 16
+  - Model name: Intel(R) Xeon(R) W-2145 CPU @ 3.70GHz
+
+- The following library versions were used:
+     ```r
+     packageVersion("coda")
+     # [1] ‘0.19.4’
+     packageVersion("LaplacesDemon")
+     # [1] ‘16.1.6’
+     packageVersion("Rcpp")
+     # [1] ‘1.0.8’
+     packageVersion("parallel")
+     # [1] ‘4.3.3’
+     ```
+
+By following these steps, you should be able to reproduce the results reported in Section 6.2 using the provided R scripts.
+

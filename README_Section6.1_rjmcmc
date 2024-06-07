@@ -1,0 +1,39 @@
+# Reproducing Results in Section 6.1
+
+This README file provides instructions to use the files and run the code in the folder named `Section6.1`. These instructions will help users reproduce the results associated with the Bayesian approach reported in Section 6.1. The software used to generate the results is the R programming language.
+
+## Steps to Reproduce the Results
+
+1. **Set Working Directory**
+   - Set the working directory to the folder named `Section6.1`.
+
+2. **Install Required Libraries**
+   - Ensure that the following libraries are installed in R:
+     ```r
+     install.packages("VGAM")
+     install.packages("MASS")
+     install.packages("xtable")
+     ```
+
+3. **Run the Simulation Code**
+   - Run the code available in the R script `linearregression_gibbs_unbounded_fullprior_felipe.R`. This code will run all the simulations for all scenarios and place the output files in the folder named `outputs`.
+     ```r
+     source("linearregression_gibbs_unbounded_fullprior_felipe.R")
+     ```
+
+4. **Analyze the Results**
+   - Run the code available in the R script `UnboundedLR_Processing.R` to analyze the results generated in step 3 and reproduce the results reported in Section 6.1.
+
+## Notes
+
+   - To generate the output files in step 3, and for the sake of time, we used a High-Performance Computing (HPC) cluster using R version 4.1.0 (2021-05-18) -- "Camp Pontanezen" and the following library versions:
+     ```r
+     packageVersion("VGAM")
+     # [1] ‘1.1.9’
+     packageVersion("MASS")
+     # [1] ‘7.3.54’
+     ```
+   - The code provided in `linearregression_gibbs_unbounded_fullprior_felipe.R` has been adapted to run on a single machine.
+
+By following these steps, you should be able to reproduce the results reported in Section 6.1 using the provided R scripts.
+
