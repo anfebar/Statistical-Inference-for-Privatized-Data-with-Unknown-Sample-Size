@@ -1,0 +1,50 @@
+# Reproducing Results in Table 3 of Section 6.1
+
+This README file provides instructions for using the files and running the code in the folder named `Section6.1`. These steps will help users reproduce the results associated with the Bootstrap approach reported in Table 3 of Section 6.1. The software used to generate the results is the R programming language.
+
+## Steps to Reproduce the Results
+
+1. **Set Working Directory**
+
+   * Set the working directory to the folder named `Section6.1/Table3`.
+
+2. **Install Required Libraries**
+
+   * Ensure the following libraries are installed in R:
+
+     ```r
+     install.packages("VGAM")
+     install.packages("MASS")
+     install.packages("xtable")
+     install.packages("matrixcalc")
+     ```
+
+3. **Run the Simulation Code**
+
+   * Run the R script `linearregression_parametric_bootstrap.R`. This will execute all simulations for all scenarios and place the output files in the `outputs` folder.
+
+     ```r
+     source("linearregression_parametric_bootstrap.R")
+     ```
+
+4. **Analyze the Results**
+
+   * Run the R script `Bootstrap_Processing.R` to analyze the results generated in step 3 and reproduce Table 3 in Section 6.1.
+
+## Notes
+
+   * By following these steps, the user should be able to reproduce the results reported in Table 3 of Section 6.1 using the provided R scripts.
+
+   * To generate the output files in step 3, we used a desktop running Ubuntu 24.04 LTS. The analysis was conducted using R version 4.4.3 (2025-02-28) and the following package versions:
+
+packageVersion("VGAM")
+# [1] ‘1.1.9’
+packageVersion("MASS")
+# [1] ‘7.3.65’
+packageVersion("matrixcalc")
+# [1] ‘1.0.6’
+
+The machine uses an Intel(R) Xeon(R) W-2145 CPU @ 3.70GHz processor with 16 cores available for parallel computing. The user can modify the number of cores or replace mclapply with lapply if parallelization is not desired.
+
+
+
