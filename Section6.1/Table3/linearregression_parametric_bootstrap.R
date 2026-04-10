@@ -1,3 +1,4 @@
+library(VGAM)        ### For Laplace noise generation
 library(MASS)        ### For multivariate normal simulation
 library(parallel)    ### For parallel computing
 library(matrixcalc)  ### For checking if a matrix is positive definite

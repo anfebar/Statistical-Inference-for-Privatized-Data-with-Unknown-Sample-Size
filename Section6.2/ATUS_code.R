@@ -6,6 +6,11 @@ library(Rcpp)
 source("aux.R") # File with auxiliar functions
 sourceCpp("slice_final.cpp") # File with MCMC implementations
 
+# iteration is the outer replication index, and each value generates a new noisy bounded summary s.
+# nsave is the number of MCMC draws saved within each chain.
+# nch is the number of parallel MCMC chains run for each bounded or unbounded fit.
+# draw_seq gives the indices of the saved draws retained for summaries and output objects.
+# iter is the inner unbounded replication index, and each value changes the realization of n_dp.
 for(iteration in 1:10)
 {
   # MCMC length, number of chains, and retained iterations
@@ -17,8 +22,8 @@ for(iteration in 1:10)
   for(epsilon_ss in c(1,10))  # Privacy budget for s
   {
     # Read data
-    xF <- read.csv("female.csv")
-    xM <- read.csv("male.csv")
+    xF <- read.csv("data/female.csv")
+    xM <- read.csv("data/male.csv")
     
     x_true <- rbind(xF,xM)[sample(1:(nrow(xF)+nrow(xM)),6656),]
     a <- min(x_true) # Find truncation level

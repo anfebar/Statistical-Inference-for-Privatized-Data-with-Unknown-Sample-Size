@@ -1,6 +1,6 @@
 library(coda)
 
-pdf("ATUS_figures.pdf", width = 5, height = 5)
+pdf("figures/ATUS_figures.pdf", width = 5, height = 5)
 # par(mfrow=c(2,3))
 iteration <- 1
 
@@ -58,8 +58,8 @@ for(epsilon_ss in c(1,10))
     #######################
     #######################
     # Read data
-    xF <- read.csv("female.csv")
-    xM <- read.csv("male.csv")
+    xF <- read.csv("data/female.csv")
+    xM <- read.csv("data/male.csv")
     x_true <- rbind(xF,xM)[sample(1:(nrow(xF)+nrow(xM)),6656),]
     n <- nrow(x_true)
     
@@ -148,7 +148,7 @@ dev.off()
 
 if(TRUE)
 {
-  pdf("ATUS_figures_alpha_post.pdf", width = 5*(0.32/0.48), height = 5*(0.32/0.48))
+  pdf("figures/ATUS_figures_alpha_post.pdf", width = 5*(0.32/0.48), height = 5*(0.32/0.48))
   # par(mfrow=c(2,3))
   ################################
   # alpha posterior
@@ -292,5 +292,4 @@ if(TRUE)
   
   dev.off()
 }
-
 

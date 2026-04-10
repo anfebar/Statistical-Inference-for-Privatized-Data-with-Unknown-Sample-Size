@@ -522,8 +522,8 @@ onestep_mcem <- function(state, stepsize, privacy_params, hyperparams, N_DP, jum
   state$params$tau <- cu_n / cu_residual;
   state$params$beta <- ginv(cu_xtx) %*% cu_xty;
   state$params$mu <- cu_xtx[1,2:(p+1)] / cu_n;
-  state$params$phi <- params_true$phi;
-  state$params$phi_inv <- params_true$phi_inv;
+  state$params$phi <- diag(p);
+  state$params$phi_inv <- diag(p);
   # state$params$phi_inv <- cu_xtx[2 : (p+1), 2 : (p+1)] / (cu_n - 1) - (cu_xtx[2:(p+1),1] / cu_n) %*% t(cu_xtx[1,2:(p+1)] / cu_n)
   # state$params$phi <- ginv(state$params$phi_inv);
   return(state);
@@ -635,4 +635,3 @@ run_mcem <- function(iteration=1,num_cycles=15000,N=1000,ep_N=NaN,eps,N_guess,
                  state = state)
   return(outputs)
 }
-
